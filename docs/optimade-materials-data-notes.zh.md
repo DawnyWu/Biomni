@@ -2,6 +2,8 @@
 
 > 我在[架构笔记](./biomni-architecture-notes.zh.md)和[生态对比](./scientific-agent-ecosystem-comparison.zh.md)里反复用「材料领域有 OPTIMADE，所以可以跳过数据湖」这个论据，这份笔记把它讲清楚，并**修正其中说过头的部分**。
 >
+> 另一份姊妹文档：[SCP 湿实验设备控制笔记](./scp-lab-device-control-notes.zh.md) —— 材料方向如果要接实验设备（管式炉、XRD、电化学工作站），那里有可参考的设计与要避开的坑。
+>
 > 本文所有查询结果都是实际发出请求跑过的，不是抄文档。测试时间 2026-08。
 >
 > - 官网：[optimade.org](https://www.optimade.org/) ｜ 规范：[v1.3.0](https://www.optimade.org/specification/latest/)

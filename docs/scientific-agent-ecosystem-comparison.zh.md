@@ -13,6 +13,7 @@
 > 记录日期：2026-08。姊妹文档：
 > - [Biomni 架构笔记](./biomni-architecture-notes.zh.md) —— Biomni 内部机制的详细拆解。
 > - [OPTIMADE 笔记](./optimade-materials-data-notes.zh.md) —— 材料方向的数据基础设施与实测验证。
+> - [SCP 湿实验设备控制笔记](./scp-lab-device-control-notes.zh.md) —— 逐行读 `src/scp/lab/`，**并修正本文「SCP 用 MQTT 控制设备」的说法**：MQTT 实现是死代码，实际生效的传输层是 RabbitMQ。
 
 ## 目录
 
@@ -78,7 +79,7 @@
 | ③ 协议层 | — 只有内部约定 | ● 自定义 spec + MCP 传输 | ● **核心**，fork MCP 造新协议 |
 | ④ 工具层 | ● 224 个 | ● **2687 个规格，核心** | ○ 2200+ 但**不在仓库里** |
 | ⑤ 资源层 | ● **11 GB 数据湖 + conda 环境** | — 走活 API，无本地资源 | ○ 由各 Server 自己管 |
-| ⑥ 物理层 | — | ○ 论文提及，代码里没有 | ● **真做了，MQTT 设备控制** |
+| ⑥ 物理层 | — | ○ 论文提及，代码里没有 | ● **真做了，消息队列设备控制** |
 
 **看这张表就够了**：
 
@@ -161,12 +162,21 @@ SCP 共 88 个 py 文件
 
 | 文件 | 内容 |
 | --- | --- |
-| `lab/cloud/mqtt.py`（24 KB） | `MQTTCloud` 类：`send_device_control()`、`wait_for_status_update()`、连接/断线/重订阅处理、异步回调线程 |
+| `lab/cloud/mqtt.py`（600 行） | `MQTTCloud` 类：`send_device_control()`、`wait_for_status_update()`、连接/断线/重订阅处理、异步回调线程。**⚠️ 死代码，零引用，详见下方修正** |
+| `lab/cloud/cloud_devices.py`（179 行） | `DeviceControlSender`：**实际生效**的指令下发端，用的是 RabbitMQ（`pika`）而非 MQTT |
+| `lab/cloud/cloud_consumer.py`（209 行） | `OrderConsumer`：设备侧消费端，RabbitMQ，带 `basic_ack` / `basic_nack(requeue=True)` |
 | `lab/lab_operator/base.py` | `@scp_register("action_name")` 装饰器，把**设备动作**注册成 SCP 工具；`dispatch_device_actions(device_name, device_action, params)`；docstring 里提到 "device twin"（设备数字孪生） |
-| `lab/lab_operator/types.py` | `DeviceStatus` 枚举；`ActionResult` 带 `messageStatus`（1=最终结果，2=**中间结果**，-1=错误） |
-| `lab/cloud/cloud_devices.py`、`cloud_consumer.py` | 设备控制指令下发与消息消费 |
+| `lab/lab_operator/types.py` | `DeviceStatus` 六态枚举；`ActionResult` 带 `messageStatus`（1=最终结果，2=**中间结果**，-1=错误）；`BaseParams` 把实验上下文（用户、机构、实验类型、优先级）作为每次调用的必填参数 |
 
-**为什么必须新增这些？因为 MCP 的请求-响应模型装不下物理实验。** 一次合成可能跑几小时，中途要报进度、可能失败、需要暂停恢复。所以 SCP 补的正是这些：MQTT 发布订阅（而非 HTTP 请求响应）、Redis 存异步结果、`messageStatus=2` 的中间态推送、设备状态枚举。这是真实工程需求驱动的设计，不是概念包装。
+**为什么必须新增这些？因为 MCP 的请求-响应模型装不下物理实验。** 一次合成可能跑几小时，中途要报进度、可能失败、需要暂停恢复。所以 SCP 补的正是这些：消息队列（而非 HTTP 请求响应）、`messageStatus=2` 的中间态推送、设备状态枚举、`async_flag` 同步异步双模。这是真实工程需求驱动的设计，不是概念包装。
+
+> ⚠️ **修正：本文此前说「SCP 用 MQTT 控制设备」，这个说法不准确。**
+>
+> 逐行核实后发现 `lab/cloud/mqtt.py` 那 600 行**没有任何模块 import**（全仓库唯一相关引用是 `base.py:19` 一行被注释掉的 import，且指向一个不存在的模块 `mqtt_device_twin`）。实际接通的是 `base.py:222` → `cloud_devices.get_device_cloud_instance()` → `DeviceControlSender`，用 `pika` 走 RabbitMQ。
+>
+> 这个修正不改变「SCP 是三者中唯一真做了设备控制的」这一结论，但改变了「选 MQTT 而非 HTTP 是关键信号」这个论证——**真正的信号是它选了带持久化和消费确认的消息队列**（`durable=True` + `delivery_mode=2` + `basic_ack`/`nack`），而那版 MQTT 恰恰是 QoS 0、`clean_session=True`、无 TLS、扁平 topic，对下发实验指令并不安全。
+>
+> 完整分析、可参考的五个设计、以及 12 个具体问题见 [SCP 湿实验设备控制笔记](./scp-lab-device-control-notes.zh.md)。
 
 #### 发现三：`hub/` 是注册中心 + 异步网关
 
@@ -230,7 +240,7 @@ skills 按 8 大领域组织，其中药物发现 71 个、基因组学 41 个 �
 
 - **许可**：MIT。
 
-**独有能力**：真实的干湿闭环（MQTT 设备控制、设备孪生、中间态推送）、实验全生命周期与溯源、细粒度权限与多机构协作、真多学科覆盖。
+**独有能力**：真实的干湿闭环（消息队列设备控制、设备孪生、中间态推送）、实验全生命周期与溯源、细粒度权限与多机构协作、真多学科覆盖。
 
 **结构性短板**：核心资产（工具）不开源、需要 API Key、绑定托管平台；论文承诺的智能编排在开源实现中缺失；自有代码只有 3171 行，大部分价值在闭源服务里；无 agent 循环、无执行环境。
 
@@ -251,7 +261,7 @@ skills 按 8 大领域组织，其中药物发现 71 个、基因组学 41 个 �
 | **工具发现** | 循环前一次性 LLM 选下标 | **三种检索器，且是可调工具** + Compact Mode | Hub `GET /tools` 注册表 |
 | **代码执行** | ● **持久 REPL** + R + Bash | ○ 作为一个工具，无状态 | ✗ 不提供 |
 | **本地数据** | ● **11 GB 数据湖 / 76 文件** | ✗ 全走活 API | ✗ 各 Server 自管 |
-| **物理设备** | ✗ | ✗ | ● **MQTT + 设备孪生 + 中间态推送** |
+| **物理设备** | ✗ | ✗ | ● **消息队列 + 设备孪生 + 中间态推送** |
 | **实验生命周期** | ✗ | ✗ | ● 注册→规划→执行→监控→归档 |
 | **权限/审计** | ○ 仅 license 分层（commercial mode） | ✗ | ● **细粒度认证授权 + 溯源** |
 | **Skills** | 2 篇 know-how | 153 个 + Claude Code plugin | **207 个**（Anthropic Skills 格式） |
@@ -308,7 +318,7 @@ skills 按 8 大领域组织，其中药物发现 71 个、基因组学 41 个 �
 
 Biomni 有 `lab_automation.py`（3 个工具）和 `protocols.py`（4 个工具），但那是**生成协议文本**，不是控制设备。ToolUniverse 论文提到 robotics 和 lab automation 作为工具类别，但我在代码里没找到设备控制实现。
 
-**只有 SCP 有真实的设备控制代码**：MQTT 长连接、指令下发、状态回传、设备孪生、中间进度推送。选 MQTT 而非 HTTP 是关键信号 —— 那是工业物联网的标准做法，说明他们真的在连仪器，不是在做 demo。
+**只有 SCP 有真实的设备控制代码**：消息队列指令下发、状态回传、设备孪生、中间进度推送。选带持久化和消费确认的消息队列而非 HTTP 是关键信号——那是工业场景的标准做法，说明他们真的在连仪器，不是在做 demo。（细节见 [SCP 设备控制笔记](./scp-lab-device-control-notes.zh.md)：仓库里 MQTT 与 RabbitMQ 两套实现并存，生效的是后者。）
 
 如果你的目标包含自动化实验（合成机器人、自动表征、闭环优化），**SCP 是三者里唯一在这条路上的**。
 
@@ -369,7 +379,7 @@ SCP **fork** 了 MCP（69/88 文件沿用，`mcp`→`scp` 重命名），造了�
 
 ToolUniverse 完全在数字世界：查数据库、跑 ML 模型、调 API、算 ADMET。
 
-SCP 跨到了物理世界：MQTT 控设备、设备孪生、中间进度、实验状态机。
+SCP 跨到了物理世界：消息队列控设备、设备孪生、中间进度、实验状态机。
 
 **如果只做计算，SCP 的 `lab/` 那 2157 行对你毫无价值，而那正是它 68% 的自有代码。** 反过来，如果要做自动化实验，ToolUniverse 结构上帮不了你。
 
@@ -452,7 +462,7 @@ Biomni 和 ToolUniverse 在这方面几乎是空的（Biomni 只有分子层面�
 │      → SCP。三者中唯一真多学科（非生物约 54%）。但先核实工具质量。
 │
 ├─ 「我要连实验设备做干湿闭环」
-│      → SCP，唯一选项。MQTT 设备控制 + 设备孪生 + 实验生命周期。
+│      → SCP，唯一选项。消息队列设备控制 + 设备孪生 + 实验生命周期。
 │
 ├─ 「我要跨机构共享仪器，需要权限和审计」
 │      → SCP。另两家根本没设计这个问题。
@@ -541,7 +551,8 @@ print(t)"                                                                # → 2
 
 | 关注点 | 位置 | 备注 |
 | --- | --- | --- |
-| **设备控制（MQTT）** | `src/scp/lab/cloud/mqtt.py` | 24 KB，`send_device_control()` / `wait_for_status_update()` |
+| **设备控制（实际生效，RabbitMQ）** | `src/scp/lab/cloud/cloud_devices.py:20` | `DeviceControlSender`，持久化队列 + `delivery_mode=2` |
+| **设备控制（死代码，MQTT）** | `src/scp/lab/cloud/mqtt.py` | 600 行 `MQTTCloud`，零引用 |
 | **设备动作注册** | `src/scp/lab/lab_operator/base.py` | `@scp_register()` 装饰器、`dispatch_device_actions()` |
 | **设备状态与中间态** | `src/scp/lab/lab_operator/types.py` | `DeviceStatus` 枚举、`ActionResult.messageStatus` |
 | Hub（注册表 + 异步网关） | `src/scp/hub/hub_server.py` | Flask，`/register_server`、`/tools/call_tool` |
@@ -567,7 +578,7 @@ print(t)"                                                                # → 2
 
 1. **三者不在同一层，不是竞品。** Biomni 是 agent（②④⑤层），ToolUniverse 是工具库（③④层），SCP 是协议 + 平台（③⑥层）。把它们当竞品比是最常见的误解。
 2. **SCP 的参考实现是 MCP SDK 1.9.4 的 fork**：88 个 py 文件里 69 个沿用，自有代码 3171 行（占 23%），全部集中在 `hub/`（1014 行）和 `lab/`（2157 行）。LICENSE 仍署 Anthropic。
-3. **SCP 真正的贡献是 `lab/`** —— 三者中唯一有真实物理设备控制代码的（MQTT、设备孪生、中间态推送）。选 MQTT 而非 HTTP 说明是真在连仪器。这也是 MCP 请求-响应模型装不下科学实验的直接证据。
+3. **SCP 真正的贡献是 `lab/`** —— 三者中唯一有真实物理设备控制代码的（消息队列、设备孪生、中间态推送、同步异步双模）。选带持久化与消费确认的消息队列而非 HTTP 说明是真在连仪器。这也是 MCP 请求-响应模型装不下科学实验的直接证据。注意仓库里 MQTT 与 RabbitMQ 两套实现并存，**生效的是 RabbitMQ，MQTT 那 600 行是死代码**（详见 [设备控制笔记](./scp-lab-device-control-notes.zh.md)）。
 4. **SCP 仓库里工具数为 0**，2200+ 在托管平台，190/207 skills 需 API Key。它是开源协议 + 闭源服务；ToolUniverse 是彻底的开源库（2687 条规格全在本地）。**这是两者最实质的差异。**
 5. **ToolUniverse 在做内容，SCP 在做管道**：37.8 万行 vs 3171 行自有代码。ToolUniverse 押注 MCP 生态会赢，SCP 押注科学场景需要自己的标准。
 6. **SCP 是唯一真多学科的**（非生物约 54%，物理 21% / 化学 12% / 材料 9%），对材料化学方向最友好，但工具质量待核实，且成熟 skills 仍集中在生物侧。

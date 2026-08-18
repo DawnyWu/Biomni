@@ -11,6 +11,8 @@
 >   —— 三方对比，含分层模型、SCP 是 MCP SDK fork 的代码级证据、选型决策树。
 > - [OPTIMADE 笔记：材料数据的跨库统一查询标准](./optimade-materials-data-notes.zh.md)
 >   —— 材料方向的数据基础设施，含实测验证，**并修正了本文「材料可跳过数据湖」的说法**。
+> - [SCP 湿实验设备控制笔记](./scp-lab-device-control-notes.zh.md)
+>   —— 逐行读 SCP 的 `lab/` 模块，湿实验设备控制的可参考设计与反面教材。
 
 ## 目录
 

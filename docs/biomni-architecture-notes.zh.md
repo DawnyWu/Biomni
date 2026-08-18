@@ -15,10 +15,11 @@
 - [第一部分：Biomni 是什么，特殊在哪里](#第一部分biomni-是什么特殊在哪里)
   - [Q1.1 框架是什么？](#q11-框架是什么)
   - [Q1.2 真正特殊的地方](#q12-真正特殊的地方)
-- [第二部分：三个核心设计问题](#第二部分三个核心设计问题)
+- [第二部分：四个核心设计问题](#第二部分四个核心设计问题)
   - [Q2.1 「把环境当成 action space」是什么意思？举个例子](#q21-把环境当成-action-space是什么意思举个例子)
   - [Q2.2 数据湖是什么？为什么要有这个东西？](#q22-数据湖是什么为什么要有这个东西)
   - [Q2.3 Python 解释器持久化有什么用？好处是什么？](#q23-python-解释器持久化有什么用好处是什么)
+  - [Q2.4 「opencode 没有持久 REPL」具体是什么意思？举个例子](#q24-opencode-没有持久-repl具体是什么意思举个例子)
 - [第三部分：和 ToolUniverse 的区别](#第三部分和-tooluniverse-的区别)
 - [第四部分：能否改成材料化学方向](#第四部分能否改成材料化学方向)
 - [第五部分：用 opencode 做这样一个 agent 容易么](#第五部分用-opencode-做这样一个-agent-容易么)
@@ -121,7 +122,7 @@ LIBRARIES: [list of indices]
 
 ---
 
-## 第二部分：三个核心设计问题
+## 第二部分：四个核心设计问题
 
 ### Q2.1 「把环境当成 action space」是什么意思？举个例子
 
@@ -362,6 +363,196 @@ def run_with_timeout(func, args=None, kwargs=None, timeout=600):
 持久 REPL 是「**长时程数据密集科研任务**」这个场景下的正确选择：好处（增量分析、廉价错误恢复、上下文压缩）全都随任务步数和数据规模放大，代价（超时不干净、状态污染、沙箱困难）则相对固定。
 
 反过来，如果任务是「查三个 API 然后总结」，持久性毫无价值，标准 function-calling 更简单更安全。**这是个场景决定的选择，不是普适的优劣。**
+
+---
+
+### Q2.4 「opencode 没有持久 REPL」具体是什么意思？举个例子
+
+这是 [Q2.3](#q23-python-解释器持久化有什么用好处是什么) 的延伸，也是 [第五部分](#第五部分用-opencode-做这样一个-agent-容易么) 里那句「和 Biomni 最实质的差别」的展开。
+
+#### 先说清一个容易混淆的层次问题
+
+「持久」有两个完全不同的级别，混淆这两者会导致错误判断：
+
+| 级别 | 持久的是什么 | 谁有 |
+| --- | --- | --- |
+| **① shell 会话持久** | 当前目录、环境变量、alias、shell 历史 | 传统终端、PTY、tmux |
+| **② 解释器进程持久** | **内存里的 Python 对象**（DataFrame、模型权重、已加载的数据集） | Jupyter kernel、**Biomni** |
+
+**关键在于：即使拿到了 ①，也拿不到 ②。**
+
+因为 `python script.py` 这个进程一退出，进程里的所有对象就随之消失，和 shell 会话是否存活毫无关系。要拿到 ② 只有两条路：常驻一个 Python 解释器进程把代码送进去（Biomni 的做法：`exec(code, _persistent_namespace)`），或者连一个常驻的 Jupyter kernel。
+
+opencode 的现状是**连 ① 都没有**。它的 `bash` 工具（`packages/opencode/src/tool/bash.ts`）每次调用都通过 `ChildProcessSpawner` 新起一个子进程，所以 `cd`、`export`、`source venv/bin/activate` 都不跨调用生效（社区有 issue [sst/opencode#23449](https://github.com/anomalyco/opencode/issues/23449) 在推 PTY 方案，[#6488](https://github.com/sst/opencode/issues/6488) 有详细调查）。Claude Code 略好一点——官方文档说「working directory persists between commands; shell state (everything else) does not」，即有 ① 的一部分。
+
+但**这个区别对我们要讨论的事情不重要**，因为无论 ① 有没有，② 都没有。所以下面的对照例子对 opencode 和 Claude Code 同等适用。
+
+#### 对照例子：一个材料筛选任务
+
+任务（用你关心的材料方向举例）：
+
+> 从 Materials Project 拉所有含锂的氧化物，算 Magpie 描述符，训一个形成能预测模型，看哪些特征重要，挑 20 个候选。
+
+##### Biomni 版本（持久 REPL）
+
+**轮 1** —— 拉数据，这一步很贵：
+
+```python
+<execute>
+from mp_api.client import MPRester
+with MPRester(API_KEY) as m:
+    docs = m.materials.summary.search(
+        elements=["Li", "O"],
+        fields=["material_id", "formula_pretty", "formation_energy_per_atom", "band_gap"],
+    )
+print(len(docs))
+</execute>
+```
+
+`<observation>` → `3184`　（耗时约 4 分钟）
+
+**轮 2** —— 看看数据长什么样：
+
+```python
+<execute>
+import pandas as pd
+df = pd.DataFrame([d.model_dump() for d in docs])
+print(df.shape)
+print(df.describe())
+</execute>
+```
+
+注意：`docs` 直接用，**没有重新下载**。
+
+**轮 3** —— 算描述符：
+
+```python
+<execute>
+from matminer.featurizers.composition import ElementProperty
+ep = ElementProperty.from_preset("magpie")
+X = ep.featurize_dataframe(df, col_id="composition")
+</execute>
+```
+
+`<observation>` → `KeyError: 'composition'`　**← 崩了**
+
+**轮 4** —— 修一行：
+
+```python
+<execute>
+from pymatgen.core import Composition
+df["composition"] = df["formula_pretty"].apply(Composition)
+X = ep.featurize_dataframe(df, col_id="composition")
+print(X.shape)
+</execute>
+```
+
+**这是全场最关键的一步**：`df` 还在内存里，`ep` 也还在，模型只需要补一列然后重跑失败的那一行。**那 4 分钟的下载没有重来。**
+
+**轮 5-6** —— 训模型、看特征重要性、画图，全程直接用 `X`、`df`、训好的 `model` 对象。用户随口一句「刚才那个 X，把 top 20 特征重要性画出来」，模型一行 `plot` 就完事。
+
+##### opencode / Claude Code 版本（无持久解释器）
+
+**轮 1** —— 必须写成脚本，而且**必须显式想到存盘**：
+
+```bash
+cat > 01_fetch.py <<'EOF'
+from mp_api.client import MPRester
+import pandas as pd
+with MPRester(API_KEY) as m:
+    docs = m.materials.summary.search(elements=["Li","O"], fields=[...])
+df = pd.DataFrame([d.model_dump() for d in docs])
+df.to_parquet("cache/raw.parquet")      # ← 这一行是生死线
+print(df.shape)
+EOF
+python 01_fetch.py
+```
+
+如果模型**忘了写 `to_parquet`**（这在实践中经常发生，因为当下那一步并不需要它），那 4 分钟就白花了，下一步得从头再下载。
+
+**轮 2** —— 新进程，一切从磁盘恢复：
+
+```bash
+cat > 02_featurize.py <<'EOF'
+import pandas as pd
+from matminer.featurizers.composition import ElementProperty
+df = pd.read_parquet("cache/raw.parquet")     # ← 重新读
+ep = ElementProperty.from_preset("magpie")
+X = ep.featurize_dataframe(df, col_id="composition")
+X.to_parquet("cache/features.parquet")        # ← 又一条生死线
+EOF
+python 02_featurize.py
+```
+
+`KeyError: 'composition'` —— 同样崩了。改脚本重跑。因为轮 1 存了 parquet，只重跑 featurize，还行。
+
+**轮 6** —— 用户说「刚才那个 X，画个特征重要性」：
+
+```bash
+cat > 04_plot.py <<'EOF'
+import pandas as pd, joblib
+X = pd.read_parquet("cache/features.parquet")   # 恢复
+model = joblib.load("cache/model.pkl")          # 恢复（前提是轮 5 存了）
+...
+EOF
+python 04_plot.py
+```
+
+**每一次「再看一下」都要付一次反序列化的代价，而且前提是上一步恰好存了你现在需要的东西。**
+
+#### 差别到底在哪：三点
+
+**1. 不是「能不能做」，而是「谁来管状态」**
+
+opencode 完全能完成这个任务。真正的区别是：**Biomni 把状态隐式地留在内存里，opencode 要求你显式地把状态序列化到磁盘。**
+
+这个转换带来的成本是**认知负担前移**——模型在写第 1 步的时候，就必须预见到「第 4 步会需要这个中间结果」，从而决定存不存、存成什么格式。预见错了就得重跑。持久 REPL 下这个决策根本不存在，因为默认全都留着。
+
+**2. 有些东西根本序列化不了（或者代价极高）**
+
+这是最硬的限制。列一下科研场景里常见的、跨不过进程边界的状态：
+
+| 状态类型 | 能落盘吗 |
+| --- | --- |
+| DataFrame / ndarray | ✔ parquet / npy，快 |
+| sklearn 模型 | ✔ joblib |
+| pymatgen `Structure` 列表 | △ 能 `as_dict()`，但笨重且慢 |
+| **已加载到 GPU 的模型权重** | ✘ **每次重新加载，几分钟 + 几个 GB** |
+| 打开的数据库连接 / API session（含鉴权态） | ✘ 必须重连重新鉴权 |
+| backed 模式的 `AnnData` / h5ad handle | ✘ 句柄不可序列化 |
+| matplotlib figure 的交互状态 | ✘ |
+| 随机数状态、CUDA 上下文 | ✘ |
+
+**GPU 模型权重那一行对材料方向特别致命。** 如果你用 CHGNet / M3GNet / MACE 这类机器学习势做结构松弛，加载模型到显存要几十秒到几分钟。持久 REPL 下加载一次用一整个 session；无状态模式下**每次调用都要重新加载**。做 100 个结构的批量松弛，这个差别就是几分钟 vs 几小时。
+
+**3. opencode 版本反而更可复现——这是它的优势**
+
+必须公平地说：那几个 `01_fetch.py` / `02_featurize.py` / `03_train.py` 加起来**就是一条完整、可重跑、可进补充材料的 pipeline**。
+
+Biomni 那 6 轮对话的 log 你没法直接重跑——因为存在顺序依赖和隐式状态，同一段代码在不同的 namespace 状态下结果可能不同（这正是 [Q2.3 代价](#q23-python-解释器持久化有什么用好处是什么) 里「不可重放」那一条，而且它和数据湖追求的可复现性其实是矛盾的）。
+
+**所以这是一个真实的取舍，不是 opencode 的缺陷**：
+
+| | 持久 REPL（Biomni） | 落盘脚本（opencode） |
+| --- | --- | --- |
+| 探索速度 | 快，随口就能追问 | 慢，每次要恢复状态 |
+| 错误恢复 | 便宜，改一行重跑一步 | 看运气，取决于上一步存了没 |
+| 昂贵对象（GPU 权重等） | 加载一次 | 每次重载 |
+| 可复现性 | 差，需要完整执行顺序 | **好，脚本自带即是 pipeline** |
+| 沙箱化 | 难（不能靠进程隔离） | **易，天然进程隔离** |
+
+**探索期想要前者，交付期想要后者。** 成熟的做法是探索用 Biomni 式的持久环境，定稿后让 agent 把过程整理成独立脚本。
+
+#### 想在 opencode 里补上持久 REPL，怎么办
+
+这个缺口是可以填的，而且填法很直接：**写一个 MCP server，内部维护一个常驻的 Python 解释器或 Jupyter kernel，对外暴露一个 `run_python(code)` 工具。**
+
+- 用 `jupyter_client` 连一个常驻 kernel（工程上最稳，能拿到富输出、能中断、生态成熟），或者照 Biomni 那样简单粗暴地 `exec` 进一个模块级 dict（`biomni/tool/support_tools.py:6-7`）。
+- 挂进 `opencode.json` 的 `mcp` 段即可。
+- 这样就把 Biomni 的核心机制搬到了 opencode 上，而且是可复用资产——同一个 server 在 Claude Code、Cursor 里都能用（延续[第五部分](#建议把工具写成-mcp-server别赌框架)「别赌框架，押注 MCP」的思路）。
+- 记得把 Biomni 踩过的坑一并处理：超时（不能用 multiprocessing，否则命名空间就没了，见 `biomni/utils.py:183` 的注释）、输出截断、以及**沙箱**（`exec` 全权限跑在你的机器上，要上容器）。
+
+> ⚠️ 这个方案我只做了架构判断，**没有实现和验证**。社区已有若干 Jupyter MCP server 项目，选型前建议先看看现成的。
 
 ---
 
@@ -628,7 +819,8 @@ TUI、会话管理、多 provider、权限系统、LSP，以及最关键的 `bas
 
 ### 会失掉的三样东西
 
-1. **没有持久 Python REPL**。opencode 的 `bash` 每次调用是独立进程，跨轮变量不存活。长分析得写成 `.py` 落盘再跑——某种意义上更可复现，但 [Q2.3](#q23-python-解释器持久化有什么用好处是什么) 里那些好处（尤其是廉价错误恢复）都拿不到。这是和 Biomni 最实质的差别。
+1. **没有持久 Python REPL**。opencode 的 `bash` 工具每次调用都新起子进程，跨轮变量不存活（连 `cd`、`export` 都不跨调用生效）。长分析得写成 `.py` 落盘再跑——某种意义上更可复现，但 [Q2.3](#q23-python-解释器持久化有什么用好处是什么) 里那些好处（尤其是廉价错误恢复）都拿不到。这是和 Biomni 最实质的差别。
+   **→ 详细对照例子、以及怎么用一个 MCP server 把这个缺口补上，见 [Q2.4](#q24-opencode-没有持久-repl具体是什么意思举个例子)。**
 2. **没有资源检索层**。opencode 靠 skills 描述匹配 + 你的 prompt 管理上下文。真有 200+ 工具会爆 context，得自己写插件实现检索。
 3. **没有 environment / 数据湖概念**。conda 环境和数据自己管，也没有 commercial mode 那种 license 过滤。
 
@@ -701,6 +893,7 @@ Biomni 有 `add_mcp()`，opencode 原生支持 `mcp` 配置，ToolUniverse 本�
 2. **「环境即 action space」的要点是让模型写任意代码去组合工具、数据、软件、知识**——工具是原子，代码是语法，有语法才有无限的表达力。
 3. **数据湖一半的价值在那 76 行描述**（解决「发现」问题），不在 11 GB 文件；但它只对「数据分散 + API 混乱」的领域划算，材料领域有 OPTIMADE 可以跳过。
 4. **持久 REPL 最大的好处是廉价的错误恢复**，其次是上下文压缩；代价是超时控制被迫降级和沙箱困难。场景决定取舍，不是普适优劣。
-5. **Biomni 与 ToolUniverse 是范畴不同的东西**：一个是垂直整合的 agent，一个是水平的工具协议层。ToolUniverse 工具规模大一个量级且部署极轻；Biomni 有状态、有数据、有长时程分析能力。架构上可以组合（Biomni loop + ToolUniverse MCP），但需要把 retriever 换成 `Tool_Finder`。
-6. **迁移到材料化学：底盘全部可复用，领域内容全部要重写，唯一的代码摩擦点是 `utils.py:846` 的硬编码列表。** 分子化学有现成基础（rdkit / openmm / vina），无机固态是空白。
-7. **不要赌框架，把领域工具写成 MCP server。** Biomni、opencode、ToolUniverse 三边都吃 MCP。
+5. **「shell 会话持久」和「解释器进程持久」是两个级别，拿到前者也拿不到后者**（`python x.py` 一退出，对象就随进程消失）。Claude Code 只有第一级的一部分（cwd），opencode 连第一级都没有（每次命令新起子进程）。后果是每一步都要显式落盘，而昂贵对象（GPU 上的 ML 势权重、数据库连接、h5ad 句柄）根本跨不过进程边界。反过来，落盘脚本天然可复现——**探索期要持久，交付期要落盘**。这个缺口可以用一个内部常驻 kernel 的 MCP server 补上。
+6. **Biomni 与 ToolUniverse 是范畴不同的东西**：一个是垂直整合的 agent，一个是水平的工具协议层。ToolUniverse 工具规模大一个量级且部署极轻；Biomni 有状态、有数据、有长时程分析能力。架构上可以组合（Biomni loop + ToolUniverse MCP），但需要把 retriever 换成 `Tool_Finder`。
+7. **迁移到材料化学：底盘全部可复用，领域内容全部要重写，唯一的代码摩擦点是 `utils.py:846` 的硬编码列表。** 分子化学有现成基础（rdkit / openmm / vina），无机固态是空白。
+8. **不要赌框架，把领域工具写成 MCP server。** Biomni、opencode、ToolUniverse 三边都吃 MCP。

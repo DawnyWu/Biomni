@@ -351,9 +351,43 @@ data_lake_dict = {
 }
 ```
 
-内容大致是：DepMap（癌症细胞系 CRISPR 筛选）、BindingDB（结合亲和力）、蛋白互作网络、单细胞数据集索引、药物重定位库、药物相互作用、GWAS 汇总统计等等——都是预先 ETL 成 parquet/CSV/TSV 的**统一格式副本**。
+76 个文件按内容归类（脚本统计 `data_lake_dict` 所得）：
+
+| 类别 | 文件数 | 代表 |
+| --- | ---: | --- |
+| 基因集 | 16 | MSigDB 10 个 + MouseMine 6 个 |
+| 药物 / 化合物 | 12 | BindingDB、Broad 重定位库、Enamine REAL、DDInter 药物相互作用 ×8 |
+| 高通量筛选 | 8 | EveBio 的 assay / compound / 曲线拟合结果全套 |
+| 蛋白互作网络 | 7 | 按实验方法分开：亲和捕获-质谱、酵母双杂交、共分级、邻近标记、体外重构复合物、病毒-宿主 |
+| 疾病 / 本体 / 知识图 | 7 | OMIM、GO、HPO、DisGeNET、PrimeKG（1.7 万疾病 / 400 万+ 关系）、TxGNN |
+| 遗传互作 | 5 | 合成致死、合成拯救、剂量生长缺陷 |
+| 变异 / GWAS | 5 | GeneBass ×3（pLoF / missense / synonymous）、GWAS Catalog |
+| DepMap 癌症细胞系 | 4 | 全基因组 CRISPR 效应量、依赖概率、表达谱、细胞系元数据 |
+| 表达谱 | 4 | GTEx 组织表达、Human Protein Atlas、CZI Cell Census 索引、细胞类型 marker |
+| microRNA | 4 | miRTarBase ×3、miRDB 预测靶点 |
+| 其他 | 4 | McPAS-TCR、人/鼠 sgRNA 文库、`gene_info` |
+
+格式分布：41 parquet / 21 csv / 7 pkl / 3 txt / 2 tsv / 1 json / 1 obo。
+
+**性质上全是「汇总层」的表**——已经被别人分析完、整理成行列结构的结论性数据，不是原始数据。
 
 跳过下载的方式：`A1(path='./data', expected_data_lake_files=[])`。
+
+#### 够用吗？——不够，而且它不打算够
+
+明显不在湖里的东西：原始测序数据（FASTQ/BAM）、蛋白与小分子的三维结构文件、病理切片与显微镜影像、临床 / EHR 数据、原始质谱与流式数据、化学反应库。
+
+11 GB 在生物医学里其实很小——单个 scRNA-seq 图谱就能超过它，DepMap 放进来的是 4 个汇总表而非全量门户。
+
+但这不是缺陷，是**刻意的分工**。真实架构是两层：
+
+| | 数据湖（76 文件 / 11 GB） | `database.py` 的 40 个工具（活 API） |
+| --- | --- | --- |
+| 放什么 | 高频、需要跨表 join、需要版本稳定 | 长尾、需要最新、体量太大装不下 |
+| 例子 | DepMap 效应量、MSigDB 基因集、PPI 网络 | `query_alphafold`、`query_pdb`、`query_clinvar`、`query_geo`、`query_gnomad`、`blast_sequence` |
+| 延迟 | 秒级，离线可用 | 几十秒，可能限流或超时 |
+
+那 40 个 API 工具正好补上湖里缺的结构、临床、原始数据入口。**准确的说法是：数据湖不是「全部数据」，是「高频查询的本地缓存」加「一份可被检索的目录」。**
 
 #### 为什么要有
 
@@ -379,6 +413,24 @@ data_lake_dict = {
 - **License 问题**：这直接催生了 commercial mode——`env_desc.py` 76 个数据集（学术），`env_desc_cm.py` 只剩 41 个（商用许可）。把非商用数据集注释掉了。
 - **数据会过期**：冻结的代价就是不新鲜。
 - 只对「数据密集 + API 混乱」的领域划算。
+
+#### 术语澄清：为什么叫「湖」？（它其实不太是个湖）
+
+这个词用得不准确，而且会误导对材料版的设计，值得单独说清。数据工程里这两个概念是对立的：
+
+| | 建模时机 | 特点 |
+| --- | --- | --- |
+| **数据仓库 warehouse** | 先建模、先定 schema，再写入（*schema-on-write*） | 查得快，加新数据源要改模型 |
+| **数据湖 lake** | 原样倒进去，读的时候再解释（*schema-on-read*） | 灵活，但容易变「数据沼泽」 |
+
+「湖」这个隐喻的重点是**不做前期建模、什么都先倒进来**。而 Biomni 这 76 个文件恰恰**是被 ETL 过的**——统一转成 parquet/CSV、字段整理好、每个还配一行人工描述。术语上它更接近一个**小型 curated data mart（数据集市）**。
+
+那为什么还叫湖？取的应该是另外两层意思：
+
+1. **异构共存**——七种格式混放，不强求统一 schema，这一点确实像湖。
+2. **读取方式是 schema-on-read**——这才是最像的地方。Biomni **不提供任何「读数据湖」的工具**，只在 system prompt 里说「数据在这个路径下」，剩下让模型自己写代码读。解释责任完全交给读取方，正对应 [Q2.1](#q21-把环境当成-action-space是什么意思举个例子) 那句「提供可供性，不提供接口」。
+
+**所以「湖」说的是读取方式，不是存储形态。** 做材料版不必被这个词绑住——需要的东西本质是「一份本地缓存 + 一份机器可读目录」。
 
 #### 对材料化学的启示（重要）
 
@@ -511,6 +563,26 @@ def run_with_timeout(func, args=None, kwargs=None, timeout=600):
 ### Q2.4 「opencode 没有持久 REPL」具体是什么意思？举个例子
 
 这是 [Q2.3](#q23-python-解释器持久化有什么用好处是什么) 的延伸，也是 [第五部分](#第五部分用-opencode-做这样一个-agent-容易么) 里那句「和 Biomni 最实质的差别」的展开。
+
+#### 先给一个最直观的类比
+
+**就是 Jupyter notebook 和 `python script.py` 的区别。**
+
+你在 notebook 里探索数据，是因为 cell 之间的状态是活的——第 3 个 cell 读了数据，第 8 个 cell 直接拿来用。如果每个 cell 都得重新 `import`、重新读盘，没人会用 notebook。
+
+落到对话上。假设 agent 刚跑完这一步：
+
+```python
+docs = MPRester(KEY).materials.summary.search(elements=["Li", "O"], ...)   # 耗时 4 分钟
+df = pd.DataFrame([d.model_dump() for d in docs])                          # 3184 行
+```
+
+你追问一句「按带隙画个直方图看看分布」：
+
+- **Biomni**：`df` 还在内存里，`df.band_gap.hist(bins=50)` 一行、一秒。
+- **opencode / Claude Code**：`bash` 每次新起子进程，上一个进程连同 `df` 早就没了，直接跑这行是 `NameError`。只能重跑那 4 分钟的管线，或者上一步恰好存了 parquet、现在写个新脚本重新读进来再画。
+
+下面把这件事讲透——先澄清一个层次问题，再用一个完整任务做逐轮对照。
 
 #### 先说清一个容易混淆的层次问题
 

@@ -10,7 +10,9 @@
 >
 > 本文所有结构性结论均来自**实际 clone 仓库后读代码与统计**，不是引用宣传材料。凡是无法从代码验证的（例如 SCP 托管在远端的工具数量），文中会明确标注「未验证」。
 >
-> 记录日期：2026-08。姊妹文档：[Biomni 架构笔记](./biomni-architecture-notes.zh.md)（含 Biomni 内部机制的详细拆解）。
+> 记录日期：2026-08。姊妹文档：
+> - [Biomni 架构笔记](./biomni-architecture-notes.zh.md) —— Biomni 内部机制的详细拆解。
+> - [OPTIMADE 笔记](./optimade-materials-data-notes.zh.md) —— 材料方向的数据基础设施与实测验证。
 
 ## 目录
 
@@ -424,7 +426,9 @@ Biomni 和 ToolUniverse 在这方面几乎是空的（Biomni 只有分子层面�
 
 四条路都通 MCP。**在协议之争分出胜负之前，把资产押在 MCP 这个交集上是风险最低的。**
 
-关于数据湖那一条也不变：材料领域有 OPTIMADE 跨数据库统一查询标准（MP / OQMD / AFLOW / NOMAD / COD 都实现了），**可以直接走活 API，跳过 Biomni 11 GB 数据湖那套最重的工作**。这一点上 ToolUniverse 和 SCP 的「无本地数据、全走 API」路线更适合材料领域。
+关于数据湖那一条也基本不变：材料领域有 [OPTIMADE](./optimade-materials-data-notes.zh.md) 跨数据库统一查询标准（实测 28 家 provider / 45 个子库 / 2726 万条结构，MP / OQMD / AFLOW / NOMAD / COD 都实现了），**结构数据可以直接走活 API，跳过 Biomni 11 GB 数据湖那套最重的工作**。这一点上 ToolUniverse 和 SCP 的「无本地数据、全走 API」路线更适合材料领域。
+
+但有个必须打的折扣：**OPTIMADE 只标准化了结构与成分，没有标准化物性**——实测 MP 经 OPTIMADE 暴露的 27 个字段里没有形成能、也没有带隙，那些得回退到 `mp-api`。所以性质层仍要逐个对接原生 API，批量筛选时大概仍需一份小型缓存。**是数量级减负，不是归零。**
 
 ---
 

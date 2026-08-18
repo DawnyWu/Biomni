@@ -6,9 +6,11 @@
 > 记录日期：2026-08
 > 对应 Biomni 版本：`main` @ `400c1f3`
 >
-> 📎 姊妹文档：[科学 Agent 生态三者对比：Biomni / ToolUniverse / SCP](./scientific-agent-ecosystem-comparison.zh.md)
-> —— 加入上海 AI Lab 的 SCP（Science Context Protocol）后的三方对比，含分层模型、
-> SCP 是 MCP SDK fork 的代码级证据，以及选型决策树。
+> 📎 姊妹文档：
+> - [科学 Agent 生态三者对比：Biomni / ToolUniverse / SCP](./scientific-agent-ecosystem-comparison.zh.md)
+>   —— 三方对比，含分层模型、SCP 是 MCP SDK fork 的代码级证据、选型决策树。
+> - [OPTIMADE 笔记：材料数据的跨库统一查询标准](./optimade-materials-data-notes.zh.md)
+>   —— 材料方向的数据基础设施，含实测验证，**并修正了本文「材料可跳过数据湖」的说法**。
 
 ## 目录
 
@@ -347,9 +349,12 @@ data_lake_dict = {
 
 #### 对材料化学的启示（重要）
 
-材料领域的数据库 API 化程度远好于生物：Materials Project 有官方 `mp-api`，还有 **OPTIMADE** 这种跨数据库统一查询标准（MP、OQMD、AFLOW、NOMAD、COD 都实现了）。
+材料领域的数据库 API 化程度远好于生物：Materials Project 有官方 `mp-api`，还有 **OPTIMADE** 这种跨数据库统一查询标准（实测 28 家 provider / 45 个子库 / 2726 万条结构，MP、OQMD、AFLOW、NOMAD、COD 都实现了）。
 
 **所以做材料版 agent 可以基本跳过数据湖这一步，走活 API。** 这恰好省掉了整个迁移工作里最重最贵的一环（数据托管 + 描述编写 + license 分层）。这也正是 ToolUniverse 选择的路线（见第三部分）。
+
+> ⚠️ **这个判断需要打折。** 实测发现 OPTIMADE 只标准化了**结构与成分**，没有标准化**物性**——Materials Project 经 OPTIMADE 暴露的 27 个字段里没有形成能、也没有带隙。准确的说法是：可以跳过**结构数据**的托管（确实是最重的一环），但性质层仍需逐个对接各家原生 API，批量筛选时你终究会想建一份小型性质缓存。**是数量级减负，不是归零。**
+> 详见 [OPTIMADE 笔记](./optimade-materials-data-notes.zh.md#️-重要限制标准化的是结构不是性质)。
 
 ---
 
@@ -892,7 +897,9 @@ agent.add_data({'my_xrd_library.parquet': '实验 XRD 图谱与相归属'})
 4. 新写 conda env yml——**会比生物版轻很多**，那 10 小时安装时间主要是 R 包和 CLI 工具贡献的。
 5. 补 know-how 文档：Rietveld 精修、XRD 定相、TGA/DSC 解读、循环伏安、扣电装配等。markdown + 元数据 + license 的格式很适合材料实验知识。
 
-**关键判断：材料领域有 OPTIMADE 这种跨数据库统一 API，加上 MP / NOMAD 都有成熟在线 API，所以可以完全不做 11 GB 本地数据湖。** 这省掉了迁移工作里最重的一环（见 [Q2.2](#q22-数据湖是什么为什么要有这个东西) 结尾）。
+**关键判断：材料领域有 OPTIMADE 这种跨数据库统一 API（实测 2726 万条结构可跨库统一查询），加上 MP / NOMAD 都有成熟在线 API，所以不需要托管 11 GB 级别的本地结构数据湖。** 这省掉了迁移工作里最重的一环（见 [Q2.2](#q22-数据湖是什么为什么要有这个东西) 结尾）。
+
+但要注意分层：**OPTIMADE 管「结构发现」，不管「性质获取」**——MP 经 OPTIMADE 不提供形成能和带隙，那些得回退到 `mp-api`。所以性质层仍需适配，批量筛选时大概仍要一份小型本地缓存。完整分析见 [OPTIMADE 笔记](./optimade-materials-data-notes.zh.md)。
 
 ### 相关先行工作
 
@@ -992,7 +999,7 @@ Biomni 有 `add_mcp()`，opencode 原生支持 `mcp` 配置，ToolUniverse 本�
 1. **Biomni 的价值不在 agent 架构**（LangGraph 三节点，一两天能抄完），在于那 4 万行 curated 领域 action space 和 30 GB 的环境。
 2. **「环境即 action space」的要点是让模型写任意代码去组合工具、数据、软件、知识**——工具是原子，代码是语法，有语法才有无限的表达力。
 3. **但这个机制和 coding agent 并无二致**，Biomni 本质就是一个科学特化的 coding agent。真正的区别在三个前提：代码仓库自带描述而科学环境不自带（所以要人写目录）；代码探索免费而科学探索很贵（所以要预载 + 检索）；**代码有测试当正确性裁判而科学没有**（所以要 curated 工具 + know-how + benchmark + 反编造提示词护栏）。第三条最深——`a1.py:1154` 专门写「不要编造货号」，正是因为编造的货号不会让任何东西崩掉。
-4. **数据湖一半的价值在那 76 行描述**（解决「发现」问题），不在 11 GB 文件；但它只对「数据分散 + API 混乱」的领域划算，材料领域有 OPTIMADE 可以跳过。
+4. **数据湖一半的价值在那 76 行描述**（解决「发现」问题），不在 11 GB 文件；但它只对「数据分散 + API 混乱」的领域划算。材料领域有 [OPTIMADE](./optimade-materials-data-notes.zh.md) 让上游统一了 API，**结构数据这一层可以跳过；但性质层没有标准化（MP 经 OPTIMADE 不给形成能和带隙），仍需适配 + 小型缓存**。
 5. **持久 REPL 最大的好处是廉价的错误恢复**，其次是上下文压缩；代价是超时控制被迫降级和沙箱困难。场景决定取舍，不是普适优劣。
 6. **「shell 会话持久」和「解释器进程持久」是两个级别，拿到前者也拿不到后者**（`python x.py` 一退出，对象就随进程消失）。Claude Code 只有第一级的一部分（cwd），opencode 连第一级都没有（每次命令新起子进程）。后果是每一步都要显式落盘，而昂贵对象（GPU 上的 ML 势权重、数据库连接、h5ad 句柄）根本跨不过进程边界。反过来，落盘脚本天然可复现——**探索期要持久，交付期要落盘**。这个缺口可以用一个内部常驻 kernel 的 MCP server 补上。
 7. **Biomni 与 ToolUniverse 是范畴不同的东西**：一个是垂直整合的 agent，一个是水平的工具协议层。ToolUniverse 工具规模大一个量级且部署极轻；Biomni 有状态、有数据、有长时程分析能力。架构上可以组合（Biomni loop + ToolUniverse MCP），但需要把 retriever 换成 `Tool_Finder`。

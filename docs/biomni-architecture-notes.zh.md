@@ -5,6 +5,10 @@
 >
 > 记录日期：2026-08
 > 对应 Biomni 版本：`main` @ `400c1f3`
+>
+> 📎 姊妹文档：[科学 Agent 生态三者对比：Biomni / ToolUniverse / SCP](./scientific-agent-ecosystem-comparison.zh.md)
+> —— 加入上海 AI Lab 的 SCP（Science Context Protocol）后的三方对比，含分层模型、
+> SCP 是 MCP SDK fork 的代码级证据，以及选型决策树。
 
 ## 目录
 
@@ -386,7 +390,7 @@ def run_with_timeout(func, args=None, kwargs=None, timeout=600):
 | 部署 | conda，**>10 小时，30 GB** | `pip install tooluniverse`，`python:3.12-slim` Docker |
 | 本地数据 | **11 GB 数据湖**，76 文件 | **无**，全部走活 API |
 | 代码执行 | 核心机制（持久 REPL + R + Bash） | 只是**一个工具**（`python_executor_tool.py`，无状态） |
-| Skills | 2 篇 know-how 文档 | **154 个 skills** + 完整 Claude Code plugin |
+| Skills | 2 篇 know-how 文档 | **153 个 skills** + 完整 Claude Code plugin |
 | 模型训练 | Biomni-R0（Qwen-32B RL 微调） | 明确「无需训练或微调」（另有 TxAgent 是训练过的，属另一篇工作） |
 | Benchmark | Biomni-Eval1（433 instances / 10 任务） | 高胆固醇血症 case study |
 
@@ -479,9 +483,9 @@ biomni/utils.py:846                       ← 还得把模块名加进硬编码�
 
 `compose_tool.py`：把多个工具组装成一个复合工作流工具，之后可以当单个工具调用。
 
-**4. 154 个 Skills + Claude Code plugin**
+**4. 153 个 Skills + Claude Code plugin**
 
-`skills/` 下 154 个目录，`tooluniverse-admet-prediction`、`tooluniverse-antibody-engineering` 之类的领域工作流，还有 `devtu-create-tool`、`devtu-self-evolve` 这类开发元技能。
+`skills/` 下 153 个目录，`tooluniverse-admet-prediction`、`tooluniverse-antibody-engineering` 之类的领域工作流，还有 `devtu-create-tool`、`devtu-self-evolve` 这类开发元技能。
 
 `plugin/` 下是一个完整的 Claude Code 插件：`agents/researcher.md`、8 个 slash commands（`/research`、`/literature-sweep`、`/cross-validate`、`/verify-references`……）、`hooks/hooks.json`、`settings.json`（预设 `find_tools` 等只读工具自动批准）。还有 `mcpb/` 做 MCP bundle 打包。
 
@@ -686,7 +690,7 @@ Biomni 有 `add_mcp()`，opencode 原生支持 `mcp` 配置，ToolUniverse 本�
 | 通用 REST handler（263 个工具共用） | `src/tooluniverse/base_rest_tool.py` |
 | 代码执行（作为工具） | `src/tooluniverse/python_executor_tool.py` |
 | 全部工具 spec | `src/tooluniverse/data/*.json`（633 个文件） |
-| Skills（154 个） | `skills/` |
+| Skills（153 个） | `skills/` |
 | Claude Code plugin | `plugin/`（agents / commands / hooks / settings.json） |
 
 ---
